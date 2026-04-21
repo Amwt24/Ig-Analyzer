@@ -9,6 +9,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.services.scraper_service import scrape_profile
 from app.core.config import settings
+from app.core.database import sync_collection, async_collection
+from datetime import datetime
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
@@ -31,9 +33,36 @@ def get_profile(username: str):
         data = asyncio.run(scrape_profile(username))
         
         # Se retorna model_dump() del ProfileStats de Pydantic
-        return {"status": "success", "data": data.model_dump()}
+        data_dict = data.model_dump()
+        
+        # Guardar en MongoDB si está configurado
+        if sync_collection is not None:
+            data_dict["last_scraped"] = datetime.utcnow().isoformat()
+            sync_collection.update_one(
+                {"username": data_dict["username"]},
+                {"$set": data_dict},
+                upsert=True
+            )
+            print(f"[MongoDB] Perfil de {username} guardado/actualizado en dbigp.")
+            
+        return {"status": "success", "data": data_dict}
     except Exception as e:
         import traceback
         print("[API Error] Falló la extracción en el servicio modular:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/history")
+async def get_history():
+    if async_collection is None:
+        raise HTTPException(status_code=500, detail="MongoDB no está configurado.")
+    try:
+        # Recuperar los últimos 50 perfiles guardados, ordenados por fecha descendente
+        cursor = async_collection.find({}, {"_id": 0}).sort("last_scraped", -1).limit(50)
+        history = await cursor.to_list(length=50)
+        return {"status": "success", "data": history}
+    except Exception as e:
+        print("[API Error] Falló al obtener historial de MongoDB:")
+        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Search, Loader2, AlertCircle, Sparkles } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Search, Loader2, AlertCircle, Sparkles, History, Clock } from 'lucide-react';
 import axios from 'axios';
 import './App.css';
 
@@ -8,6 +8,10 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState('');
+  const [history, setHistory] = useState<any[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,9 +20,10 @@ function App() {
     setLoading(true);
     setError('');
     setData(null);
+    setShowHistory(false);
 
     try {
-      const response = await axios.get(`http://localhost:8000/api/profile/${username.trim()}`);
+      const response = await axios.get(`${API_URL}/api/profile/${username.trim()}`);
       if (response.data.error || response.data.status === "error") {
         setError(response.data.message || 'Ocurrió un error consultando la API');
       } else {
@@ -34,6 +39,29 @@ function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadHistory = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/history`);
+      if (response.data.status === "success") {
+        setHistory(response.data.data);
+      }
+    } catch (err) {
+      console.error("Error loading history", err);
+    }
+  };
+
+  useEffect(() => {
+    if (showHistory) {
+      loadHistory();
+    }
+  }, [showHistory]);
+
+  const handleHistoryClick = (profileData: any) => {
+    setData(profileData);
+    setShowHistory(false);
+    setUsername(profileData.username);
   };
 
   return (
@@ -65,6 +93,15 @@ function App() {
           )}
         </button>
       </form>
+
+      <div className="action-buttons">
+        <button 
+          className={`toggle-history-btn ${showHistory ? 'active' : ''}`}
+          onClick={() => setShowHistory(!showHistory)}
+        >
+          <History size={18} /> {showHistory ? 'Ocultar Historial' : 'Ver Historial de Búsquedas'}
+        </button>
+      </div>
 
       {error && (
         <div className="results-container">
@@ -108,6 +145,35 @@ function App() {
                 <span className="stat-label">Posts</span>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showHistory && !loading && (
+        <div className="results-container history-container">
+          <div className="glass-card">
+            <h2 className="history-title"><Clock size={24} /> Búsquedas Recientes</h2>
+            {history.length === 0 ? (
+              <p className="no-history">No hay perfiles guardados aún.</p>
+            ) : (
+              <div className="history-grid">
+                {history.map((item, index) => (
+                  <div key={index} className="history-card" onClick={() => handleHistoryClick(item)}>
+                    <div className="history-card-header">
+                      {item.profile_pic_url ? (
+                        <img src={item.profile_pic_url} alt={item.username} className="history-img" />
+                      ) : (
+                        <div className="history-fallback">{item.username.charAt(0).toUpperCase()}</div>
+                      )}
+                      <div>
+                        <h3>{item.display_name}</h3>
+                        <p>@{item.username}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
