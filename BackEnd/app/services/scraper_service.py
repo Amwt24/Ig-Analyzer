@@ -215,10 +215,9 @@ async def scrape_posts(username: str) -> list[Post]:
 
 async def scrape_post_comments(post_url: str) -> list[Comment]:
     """
-    Extrae comentarios de un post usando la API interna de Instagram.
-    Estrategia: Navegar al post, ejecutar fetch a la API de comentarios dentro del contexto del navegador.
+    Extrae comentarios de un post usando la API v1 de Instagram.
+    Requiere media_id numérico y preferiblemente sesión autenticada.
     """
-    # Extraer shortcode de la URL del post
     import re
     shortcode_match = re.search(r'/p/([A-Za-z0-9_-]+)', post_url)
     if not shortcode_match:
@@ -226,7 +225,7 @@ async def scrape_post_comments(post_url: str) -> list[Comment]:
         return []
     
     shortcode = shortcode_match.group(1)
-    print(f"[ScraperService] Extrayendo comentarios del post {shortcode}...")
+    print(f"[ScraperService] Preparando extracción de comentarios para {shortcode}...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -234,117 +233,108 @@ async def scrape_post_comments(post_url: str) -> list[Comment]:
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
         
-        # Intentar primero de forma anónima
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-
+        # Configurar contexto con sesión si existe
+        context_opts = {
+            'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        if os.path.exists(settings.SESSION_FILE):
+            print("[ScraperService] Usando sesión guardada para comentarios...")
+            context_opts['storage_state'] = settings.SESSION_FILE
+            
+        context = await browser.new_context(**context_opts)
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
         
-        # Navegar al post para establecer cookies de sesión del navegador
-        await page.goto(post_url, wait_until="domcontentloaded", timeout=25000)
+        # Navegar al post
+        print(f"[ScraperService] Navegando a {post_url}...")
+        await page.goto(post_url, wait_until="domcontentloaded", timeout=30000)
         
-        try:
-            await page.wait_for_selector('meta[property="og:description"]', timeout=7000)
-        except Exception:
-            pass
+        # 1. Obtener el media_id (necesario para la API v1)
+        media_id = await page.evaluate('''() => {
+            const meta = document.querySelector('meta[property="al:ios:url"]');
+            if (meta) {
+                const match = (meta.getAttribute("content") || "").match(/id=(\d+)/);
+                if (match) return match[1];
+            }
+            return null;
+        }''')
         
-        # Intentar extraer comentarios via API GraphQL interna
+        if not media_id:
+            # Fallback buscando en el HTML raw
+            html = await page.content()
+            id_match = re.search(r'"media_id":"(\d+)"', html)
+            if id_match:
+                media_id = id_match.group(1)
+            else:
+                # Segundo fallback: a veces está en el script sharedData
+                id_match = re.search(r'\/p\/[A-Za-z0-9_-]+\/(\d+)\/', html)
+                if id_match: media_id = id_match.group(1)
+
         comments_data = []
-        try:
-            comments_data = await page.evaluate('''async (shortcode) => {
+        if media_id:
+            print(f"[ScraperService] media_id encontrado: {media_id}. Invocando API v1...")
+            comments_data = await page.evaluate('''async (mid) => {
                 try {
-                    // Método 1: API GraphQL para comentarios
-                    const queryHash = "bc3296d44b68399f230bdcb3e52355cb"; // Hash para comentarios
-                    const variables = JSON.stringify({
-                        shortcode: shortcode,
-                        first: 20
+                    const res = await fetch(`https://www.instagram.com/api/v1/media/${mid}/comments/?can_support_threading=true&permalink_enabled=false`, {
+                        headers: { "x-ig-app-id": "936619743392459" },
+                        credentials: "include"
                     });
+                    if (!res.ok) return { error: `HTTP ${res.status}` };
+                    const ct = res.headers.get("content-type") || "";
+                    if (!ct.includes("json")) return { error: "not-json" };
                     
-                    const url = `https://www.instagram.com/graphql/query/?query_hash=${queryHash}&variables=${encodeURIComponent(variables)}`;
-                    const res = await fetch(url, {
-                        headers: {
-                            "x-ig-app-id": "936619743392459",
-                            "x-requested-with": "XMLHttpRequest"
-                        }
-                    });
-                    
-                    if (res.ok) {
-                        const data = await res.json();
-                        const edges = data?.data?.shortcode_media?.edge_media_to_parent_comment?.edges || 
-                                      data?.data?.shortcode_media?.edge_media_to_comment?.edges || [];
-                        
-                        return edges.slice(0, 15).map(edge => ({
-                            username: edge.node?.owner?.username || "unknown",
-                            text: edge.node?.text || ""
-                        })).filter(c => c.text.length > 0);
-                    }
+                    const data = await res.json();
+                    return (data.comments || []).slice(0, 20).map(c => ({
+                        username: c.user?.username || "unknown",
+                        text: c.text || ""
+                    }));
                 } catch(e) {
-                    console.log("GraphQL failed:", e);
+                    return { error: e.toString() };
                 }
-                
-                try {
-                    // Método 2: API v1 web_info
-                    const res2 = await fetch(`https://www.instagram.com/api/v1/media/${shortcode}/comments/?can_support_threading=true&permalink_enabled=false`, {
-                        headers: {
-                            "x-ig-app-id": "936619743392459"
-                        }
-                    });
-                    
-                    if (res2.ok) {
-                        const data2 = await res2.json();
-                        const comments = data2?.comments || [];
-                        return comments.slice(0, 15).map(c => ({
-                            username: c.user?.username || "unknown",
-                            text: c.text || ""
-                        })).filter(c => c.text.length > 0);
-                    }
-                } catch(e2) {
-                    console.log("V1 API failed:", e2);
-                }
-                
-                return [];
-            }''', shortcode)
-        except Exception as e:
-            print(f"[ScraperService] API evaluate para comentarios falló: {e}")
+            }''', media_id)
         
-        # Fallback: DOM scraping si la API no devolvió nada
+        # Manejo de error o falta de datos en API
+        if isinstance(comments_data, dict) and "error" in comments_data:
+            print(f"[ScraperService] API v1 falló ({comments_data['error']}). Intentando fallback...")
+            comments_data = []
+
+        # 2. Fallback: DOM scraping si la API falló o no hubo sesión
         if not comments_data:
-            print("[ScraperService] API de comentarios no respondió. Usando DOM fallback...")
+            print("[ScraperService] Usando DOM scraping como fallback...")
             try:
+                # Esperar a que los comentarios carguen en el DOM
                 await page.wait_for_timeout(3000)
                 comments_data = await page.evaluate('''() => {
-                    const comments = [];
-                    for (let el of Array.from(document.querySelectorAll('h3'))) {
-                        if (comments.length >= 15) break;
+                    const results = [];
+                    // Instagram usa h3 para el nombre de usuario en los comentarios
+                    const userels = Array.from(document.querySelectorAll('h3, span._ap32'));
+                    for (const el of userels) {
+                        if (results.length >= 15) break;
                         const username = el.textContent.trim();
-                        if (!username) continue;
+                        if (!username || username === 'Verified') continue;
                         
-                        let parent = el.parentElement;
-                        if(parent) parent = parent.parentElement;
-                        
-                        if (parent) {
-                            const texts = Array.from(parent.querySelectorAll('span[dir="auto"], div[dir="auto"]'))
-                                             .map(e => e.textContent.trim())
-                                             .filter(t => t !== username && t !== 'Verified' && t.length > 0 && t !== 'Reply');
-                            
-                            if(texts.length > 0) {
-                                comments.push({username: username, text: texts[0]});
+                        // Buscar el texto del comentario cerca del usuario
+                        let container = el.closest('div')?.parentElement;
+                        if (container) {
+                            const textEl = container.querySelector('span[dir="auto"]');
+                            if (textEl && textEl.textContent.trim() !== username) {
+                                results.append({ username, text: textEl.textContent.trim() });
                             }
                         }
                     }
-                    return comments.slice(1, 16);
+                    return results;
                 }''')
             except Exception as e:
-                print(f"[ScraperService] DOM fallback también falló: {e}")
-        
-        comments = []
-        for c in comments_data:
-            if c.get('text'):
-                comments.append(Comment(username=c['username'], text=c['text']))
+                print(f"[ScraperService] Error en DOM fallback: {e}")
+
+        # Convertir a objetos Comment
+        final_comments = []
+        if comments_data:
+            for c in comments_data:
+                if isinstance(c, dict) and c.get('text'):
+                    final_comments.append(Comment(username=c['username'], text=c['text']))
         
         await browser.close()
-        print(f"[ScraperService] Comentarios extraídos: {len(comments)}")
-        return comments
+        print(f"[ScraperService] Extracción de comentarios finalizada. Total: {len(final_comments)}")
+        return final_comments
 
