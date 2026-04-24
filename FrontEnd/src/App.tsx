@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Loader2, AlertCircle, Sparkles, History, Clock, Image as ImageIcon, MessageSquare, TrendingUp, ThumbsUp, ThumbsDown, Minus, BarChart3, X } from 'lucide-react';
+import { Search, Loader2, AlertCircle, Sparkles, History, Clock, Image as ImageIcon, MessageSquare, TrendingUp, ThumbsUp, ThumbsDown, Minus, BarChart3, X, BrainCircuit, UserSearch } from 'lucide-react';
 import axios from 'axios';
 import './App.css';
 
@@ -18,6 +18,10 @@ function App() {
   const [loadingComments, setLoadingComments] = useState(false);
   const [comments, setComments] = useState<any[]>([]);
   const [sentimentAnalysis, setSentimentAnalysis] = useState<any>(null);
+
+  // Estados para análisis de personalidad
+  const [loadingPersonality, setLoadingPersonality] = useState(false);
+  const [personalityResult, setPersonalityResult] = useState<string | null>(null);
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -43,6 +47,7 @@ function App() {
     setSelectedPost(null);
     setComments([]);
     setSentimentAnalysis(null);
+    setPersonalityResult(null);
 
     try {
       const response = await axios.get(`${API_URL}/api/profile/${username.trim()}`);
@@ -50,7 +55,11 @@ function App() {
         setError(response.data.message || 'Ocurrió un error consultando la API');
       } else {
         // La API devuelve { status: "success", data: { username: ... } }
-        setData(response.data.data || response.data);
+        const profileData = response.data.data || response.data;
+        setData(profileData);
+        if (profileData.personality_analysis) {
+          setPersonalityResult(profileData.personality_analysis);
+        }
       }
     } catch (err: any) {
       if (err.message === 'Network Error') {
@@ -88,6 +97,22 @@ function App() {
     setSelectedPost(null);
     setComments([]);
     setSentimentAnalysis(null);
+    setPersonalityResult(profileData.personality_analysis || null);
+  };
+
+  const analyzePersonality = async () => {
+    if (!data?.username) return;
+    setLoadingPersonality(true);
+    try {
+      const res = await axios.get(`${API_URL}/api/profile/${data.username}/personality`);
+      if (res.data.status === "success") {
+        setPersonalityResult(res.data.data);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error al generar análisis de personalidad');
+    } finally {
+      setLoadingPersonality(false);
+    }
   };
 
   const loadPosts = async () => {
@@ -235,7 +260,40 @@ function App() {
                 <span className="stat-value">{data.posts}</span>
                 <span className="stat-label">Posts</span>
               </div>
+              <div className="stat-item personality-btn-container">
+                <button 
+                  className="analyze-personality-btn" 
+                  onClick={analyzePersonality}
+                  disabled={loadingPersonality}
+                >
+                  {loadingPersonality ? <Loader2 className="spin-icon" size={18} /> : <BrainCircuit size={18} />}
+                  <span>{personalityResult ? 'Re-analizar Personalidad' : 'Analizar Personalidad'}</span>
+                </button>
+              </div>
             </div>
+
+            {/* Resultado de Personalidad */}
+            {(personalityResult || loadingPersonality) && (
+              <div className="personality-analysis-card">
+                <div className="personality-card-header">
+                  <UserSearch size={22} className="text-indigo-400" />
+                  <h3>Perfil de Personalidad IA</h3>
+                </div>
+                {loadingPersonality ? (
+                  <div className="personality-loading">
+                    <Loader2 className="spin-icon" size={32} />
+                    <p>Procesando información del perfil, posts y comentarios...</p>
+                  </div>
+                ) : (
+                  <div className="personality-content">
+                    <p>{personalityResult}</p>
+                    <div className="personality-disclaimer">
+                      * Este análisis es generado por IA basado únicamente en la actividad pública reciente.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Sección de Posts */}
             <div className="posts-section">

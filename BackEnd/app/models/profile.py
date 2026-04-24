@@ -32,3 +32,4 @@ class ProfileStats(BaseModel):
     category: Optional[str] = None
     external_url: Optional[str] = None
     recent_posts: Optional[List[Post]] = []
+    personality_analysis: Optional[str] = None

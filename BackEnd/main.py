@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from app.services.scraper_service import scrape_profile, scrape_posts, scrape_post_comments
-from app.services.sentiment_service import analyze_post_acceptance
+from app.services.sentiment_service import analyze_post_acceptance, analyze_personality
 from app.core.config import settings
 from app.core.database import sync_collection, async_collection
 from datetime import datetime
@@ -129,6 +129,39 @@ async def get_history():
         print("[API Error] Falló al obtener historial de MongoDB:")
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/profile/{username}/personality")
+async def get_personality_analysis(username: str):
+    if sync_collection is None:
+        raise HTTPException(status_code=500, detail="MongoDB no está configurado.")
+    
+    # 1. Buscar el perfil en la DB (con sus posts y análisis previos)
+    profile_data = sync_collection.find_one({"username": username}, {"_id": 0})
+    if not profile_data:
+        raise HTTPException(status_code=404, detail="Perfil no encontrado en la base de datos. Scrapealo primero.")
+    
+    # 2. Verificar si tenemos al menos un post analizado para que el análisis sea rico
+    posts = profile_data.get("recent_posts", [])
+    has_analysis = any(p.get("sentiment_analysis") for p in posts)
+    
+    if not has_analysis:
+        # Podríamos lanzar error o simplemente avisar que el análisis será limitado
+        print(f"[API] @{username} no tiene posts analizados. El análisis será básico.")
+    
+    try:
+        # 3. Llamar al servicio de análisis
+        analysis = analyze_personality(profile_data)
+        
+        # 4. Guardar el resultado en la DB
+        sync_collection.update_one(
+            {"username": username},
+            {"$set": {"personality_analysis": analysis}}
+        )
+        
+        return {"status": "success", "data": analysis}
+    except Exception as e:
+        print(f"[API Error] Falló el análisis de personalidad para {username}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/image-proxy")
