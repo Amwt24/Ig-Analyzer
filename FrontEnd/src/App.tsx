@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Loader2, AlertCircle, Sparkles, History, Clock } from 'lucide-react';
+import { Search, Loader2, AlertCircle, Sparkles, History, Clock, Image as ImageIcon, MessageSquare } from 'lucide-react';
 import axios from 'axios';
 import './App.css';
 
@@ -10,6 +10,13 @@ function App() {
   const [error, setError] = useState('');
   const [history, setHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  
+  // Estados para posts y comments
+  const [loadingPosts, setLoadingPosts] = useState(false);
+  const [posts, setPosts] = useState<any[]>([]);
+  const [selectedPost, setSelectedPost] = useState<any>(null);
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [comments, setComments] = useState<any[]>([]);
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -21,6 +28,9 @@ function App() {
     setError('');
     setData(null);
     setShowHistory(false);
+    setPosts([]);
+    setSelectedPost(null);
+    setComments([]);
 
     try {
       const response = await axios.get(`${API_URL}/api/profile/${username.trim()}`);
@@ -62,6 +72,39 @@ function App() {
     setData(profileData);
     setShowHistory(false);
     setUsername(profileData.username);
+    setPosts(profileData.recent_posts || []);
+    setSelectedPost(null);
+    setComments([]);
+  };
+
+  const loadPosts = async () => {
+    if (!data?.username) return;
+    setLoadingPosts(true);
+    try {
+      const res = await axios.get(`${API_URL}/api/profile/${data.username}/posts`);
+      if (res.data.status === "success") {
+        setPosts(res.data.data);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error al cargar posts');
+    } finally {
+      setLoadingPosts(false);
+    }
+  };
+
+  const loadComments = async (post: any) => {
+    setSelectedPost(post);
+    setLoadingComments(true);
+    try {
+      const res = await axios.get(`${API_URL}/api/post/comments?url=${encodeURIComponent(post.url)}&username=${data.username}`);
+      if (res.data.status === "success") {
+        setComments(res.data.data);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error al cargar comentarios');
+    } finally {
+      setLoadingComments(false);
+    }
   };
 
   return (
@@ -118,7 +161,7 @@ function App() {
             <div className="profile-header">
               <div className="profile-image-container">
                 {data.profile_pic_url ? (
-                  <img src={data.profile_pic_url} alt={data.username} className="profile-image" />
+                  <img src={data.profile_pic_url} alt={data.username} className="profile-image" referrerPolicy="no-referrer" />
                 ) : (
                   <div className="profile-image-fallback">
                     {data.username.charAt(0).toUpperCase()}
@@ -128,6 +171,13 @@ function App() {
               <div className="profile-info">
                 <h2>{data.display_name}</h2>
                 <p className="handle">@{data.username}</p>
+                {data.category && <span className="profile-category">{data.category}</span>}
+                {data.biography && <div className="profile-biography">{data.biography}</div>}
+                {data.external_url && (
+                  <a href={data.external_url} target="_blank" rel="noreferrer" className="profile-link">
+                    🔗 {data.external_url.replace(/^https?:\/\//, '').substring(0, 30)}...
+                  </a>
+                )}
               </div>
             </div>
             
@@ -145,6 +195,73 @@ function App() {
                 <span className="stat-label">Posts</span>
               </div>
             </div>
+
+            {/* Nueva sección de Posts */}
+            <div className="posts-section">
+              <div className="posts-header">
+                <h3>Últimos Posts</h3>
+                {posts.length === 0 && !loadingPosts && (
+                  <button className="load-posts-btn" onClick={loadPosts}>
+                    <ImageIcon size={18} /> Cargar Posts
+                  </button>
+                )}
+              </div>
+
+              {loadingPosts && (
+                <div className="loading-spinner-container">
+                  <Loader2 className="spin-icon" size={32} />
+                  <p>Extrayendo posts de Instagram...</p>
+                </div>
+              )}
+
+              {posts.length > 0 && (
+                <div className="posts-grid">
+                  {posts.map((post, idx) => (
+                    <div key={idx} className="post-card" onClick={() => loadComments(post)}>
+                      {post.image_url ? (
+                         <img src={post.image_url} alt="Post" className="post-thumbnail" referrerPolicy="no-referrer" />
+                      ) : (
+                         <div className="post-thumbnail-fallback"><ImageIcon size={32} /></div>
+                      )}
+                      <div className="post-overlay">
+                         <MessageSquare size={24} />
+                         <span>Ver Comentarios</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedPost && (
+        <div className="modal-overlay" onClick={() => setSelectedPost(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <button className="close-modal" onClick={() => setSelectedPost(null)}>×</button>
+            <div className="modal-header">
+              <h3>Comentarios del Post</h3>
+              <a href={selectedPost.url} target="_blank" rel="noreferrer" className="view-post-link">Ver en Instagram</a>
+            </div>
+            
+            {loadingComments ? (
+              <div className="loading-spinner-container">
+                <Loader2 className="spin-icon" size={32} />
+                <p>Extrayendo comentarios...</p>
+              </div>
+            ) : comments.length > 0 ? (
+              <div className="comments-list">
+                {comments.map((c, i) => (
+                  <div key={i} className="comment-item">
+                    <strong>{c.username}</strong>
+                    <p>{c.text}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="no-comments">No se encontraron comentarios.</p>
+            )}
           </div>
         </div>
       )}
@@ -161,7 +278,7 @@ function App() {
                   <div key={index} className="history-card" onClick={() => handleHistoryClick(item)}>
                     <div className="history-card-header">
                       {item.profile_pic_url ? (
-                        <img src={item.profile_pic_url} alt={item.username} className="history-img" />
+                        <img src={item.profile_pic_url} alt={item.username} className="history-img" referrerPolicy="no-referrer" />
                       ) : (
                         <div className="history-fallback">{item.username.charAt(0).toUpperCase()}</div>
                       )}

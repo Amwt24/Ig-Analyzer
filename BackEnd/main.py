@@ -5,9 +5,9 @@ import asyncio
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from app.services.scraper_service import scrape_profile
+from app.services.scraper_service import scrape_profile, scrape_posts, scrape_post_comments
 from app.core.config import settings
 from app.core.database import sync_collection, async_collection
 from datetime import datetime
@@ -49,6 +49,51 @@ def get_profile(username: str):
     except Exception as e:
         import traceback
         print("[API Error] Falló la extracción en el servicio modular:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/profile/{username}/posts")
+def get_user_posts(username: str):
+    print(f"\n[API] Solicitud para extraer posts de: {username}")
+    try:
+        posts = asyncio.run(scrape_posts(username))
+        posts_dict = [p.model_dump() for p in posts]
+        
+        # Guardar en MongoDB si está configurado
+        if sync_collection is not None:
+            sync_collection.update_one(
+                {"username": username},
+                {"$set": {"recent_posts": posts_dict}},
+                upsert=True
+            )
+            print(f"[MongoDB] Posts de {username} guardados/actualizados.")
+            
+        return {"status": "success", "data": posts_dict}
+    except Exception as e:
+        print("[API Error] Falló la extracción de posts:")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/post/comments")
+def get_post_comments(url: str = Query(...), username: str = Query(None)):
+    print(f"\n[API] Solicitud para extraer comentarios del post: {url}")
+    try:
+        comments = asyncio.run(scrape_post_comments(url))
+        comments_dict = [c.model_dump() for c in comments]
+        
+        # Si pasamos el username, podemos vincular el comentario en la DB
+        if sync_collection is not None and username:
+            sync_collection.update_one(
+                {"username": username, "recent_posts.url": url},
+                {"$set": {"recent_posts.$.comments": comments_dict}}
+            )
+            print(f"[MongoDB] Comentarios añadidos al post {url} de {username}.")
+            
+        return {"status": "success", "data": comments_dict}
+    except Exception as e:
+        print("[API Error] Falló la extracción de comentarios:")
+        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
