@@ -7,10 +7,12 @@ if sys.platform == "win32":
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from app.services.scraper_service import scrape_profile, scrape_posts, scrape_post_comments
 from app.core.config import settings
 from app.core.database import sync_collection, async_collection
 from datetime import datetime
+import httpx
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
@@ -111,3 +113,39 @@ async def get_history():
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/image-proxy")
+async def image_proxy(url: str = Query(...)):
+    """
+    Proxy de imágenes para Instagram CDN.
+    El CDN de Instagram bloquea requests desde orígenes externos (localhost).
+    Este endpoint descarga la imagen server-side y la retransmite al navegador.
+    """
+    # Validar que la URL sea de un dominio de Instagram/Facebook CDN
+    allowed_domains = ["fbcdn.net", "cdninstagram.com", "instagram.com"]
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not any(domain in parsed.hostname for domain in allowed_domains):
+        raise HTTPException(status_code=400, detail="Solo se permiten imágenes de Instagram CDN.")
+    
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.instagram.com/",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            })
+            resp.raise_for_status()
+            
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            return StreamingResponse(
+                iter([resp.content]),
+                media_type=content_type,
+                headers={
+                    "Cache-Control": "public, max-age=86400",
+                    "Access-Control-Allow-Origin": "*"
+                }
+            )
+    except Exception as e:
+        print(f"[ImageProxy] Error descargando imagen: {e}")
+        raise HTTPException(status_code=502, detail="No se pudo descargar la imagen.")

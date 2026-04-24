@@ -20,6 +20,16 @@ function App() {
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
+  // Proxy para imágenes de Instagram CDN que bloquean requests cross-origin
+  const proxyImg = (url: string | null | undefined) => {
+    if (!url) return '';
+    // Solo proxy URLs del CDN de Instagram/Facebook
+    if (url.includes('fbcdn.net') || url.includes('cdninstagram.com') || url.includes('instagram.')) {
+      return `${API_URL}/api/image-proxy?url=${encodeURIComponent(url)}`;
+    }
+    return url;
+  };
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim()) return;
@@ -113,7 +123,7 @@ function App() {
         <h1>
           IG Scraper <Sparkles className="inline-block mb-3 ml-1" size={40} color="#a5b4fc" />
         </h1>
-        <p>Introduce un nombre de usuario de Instagram para consultar su perfil público utilizando un proxy seguro de RapidAPI sin penalización de IP.</p>
+        <p>Introduce un nombre de usuario de Instagram para consultar su perfil público mediante scraping inteligente con Playwright.</p>
       </header>
 
       <form className="search-container" onSubmit={handleSearch}>
@@ -161,7 +171,7 @@ function App() {
             <div className="profile-header">
               <div className="profile-image-container">
                 {data.profile_pic_url ? (
-                  <img src={data.profile_pic_url} alt={data.username} className="profile-image" referrerPolicy="no-referrer" />
+                  <img src={proxyImg(data.profile_pic_url)} alt={data.username} className="profile-image" referrerPolicy="no-referrer" />
                 ) : (
                   <div className="profile-image-fallback">
                     {data.username.charAt(0).toUpperCase()}
@@ -219,7 +229,7 @@ function App() {
                   {posts.map((post, idx) => (
                     <div key={idx} className="post-card" onClick={() => loadComments(post)}>
                       {post.image_url ? (
-                         <img src={post.image_url} alt="Post" className="post-thumbnail" referrerPolicy="no-referrer" />
+                         <img src={proxyImg(post.image_url)} alt="Post" className="post-thumbnail" referrerPolicy="no-referrer" />
                       ) : (
                          <div className="post-thumbnail-fallback"><ImageIcon size={32} /></div>
                       )}
@@ -278,7 +288,7 @@ function App() {
                   <div key={index} className="history-card" onClick={() => handleHistoryClick(item)}>
                     <div className="history-card-header">
                       {item.profile_pic_url ? (
-                        <img src={item.profile_pic_url} alt={item.username} className="history-img" referrerPolicy="no-referrer" />
+                        <img src={proxyImg(item.profile_pic_url)} alt={item.username} className="history-img" referrerPolicy="no-referrer" />
                       ) : (
                         <div className="history-fallback">{item.username.charAt(0).toUpperCase()}</div>
                       )}
