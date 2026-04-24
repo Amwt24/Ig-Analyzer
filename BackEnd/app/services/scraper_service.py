@@ -7,52 +7,66 @@ from app.models.profile import ProfileStats, Post, Comment
 from app.services.auth_service import login_and_save_state
 
 async def scrape_profile(username: str) -> ProfileStats:
-    # Asegurar que exista state o fallbacks
-    if not os.path.exists(settings.SESSION_FILE):
-        if settings.IG_COOKIE_STRING:
-            print("[ScraperService] No se encontró session_state.json. Se utilizarán cookies del .env como fallback.")
-        else:
-            print("[ScraperService] No se encontró session_state.json ni cookies. Delegando a AuthService...")
-            success = await login_and_save_state(headless=True)
-            if not success:
-                raise Exception("No se pudo regenerar la sesión automáticamente ni hay cookies de fallback.")
-                
-    # Intento de scrape
+    # ESTRATEGIA: Primero intentar scraping anónimo (funciona para perfiles públicos).
+    # Solo recurrir a sesión autenticada si el perfil es privado o IG bloquea.
+    
     try:
-        data = await _perform_scrape(username, use_state=True)
+        print(f"[ScraperService] Intentando scraping anónimo para {username}...")
+        data = await _perform_scrape(username, use_state=False)
         return data
-    except Exception as e:
-        # Si hubo un problema de redirección (cookie caducada o baneada)
-        if "redireccionó a Login" in str(e):
-            print("[ScraperService] La sesión guardada expiró de repente. Regenerando desde 0...")
-            if os.path.exists(settings.SESSION_FILE):
-                os.remove(settings.SESSION_FILE)
-                
+    except Exception as anon_error:
+        print(f"[ScraperService] Scraping anónimo falló: {anon_error}")
+        
+        # Si el anónimo falla, intentar con sesión autenticada
+        if os.path.exists(settings.SESSION_FILE):
+            print("[ScraperService] Reintentando con session_state.json...")
+            try:
+                data = await _perform_scrape(username, use_state=True)
+                return data
+            except Exception as auth_error:
+                if "redireccionó a Login" in str(auth_error):
+                    print("[ScraperService] Sesión expirada. Eliminando session_state.json...")
+                    os.remove(settings.SESSION_FILE)
+                else:
+                    raise auth_error
+        
+        # Si hay cookie string en .env, intentar con eso
+        if settings.IG_COOKIE_STRING:
+            print("[ScraperService] Reintentando con IG_COOKIE_STRING del .env...")
+            try:
+                data = await _perform_scrape(username, use_state=False, use_cookie_string=True)
+                return data
+            except Exception as cookie_error:
+                print(f"[ScraperService] Cookie string también falló: {cookie_error}")
+        
+        # Último recurso: intentar auto-login
+        if settings.IG_USERNAME and settings.IG_PASSWORD:
+            print("[ScraperService] Intentando login autónomo como último recurso...")
             success = await login_and_save_state(headless=True)
-            if not success:
-                raise Exception("No se pudo iniciar sesión para refrescar la cookie vencida.")
-            
-            # Reintentamos UNA sola vez la extracción
-            data = await _perform_scrape(username, use_state=True)
-            return data
-        else:
-            raise e
+            if success:
+                data = await _perform_scrape(username, use_state=True)
+                return data
+        
+        # Si todo falla, re-lanzar el error original con más contexto
+        raise Exception(f"No se pudo extraer el perfil de '{username}'. Error anónimo: {anon_error}")
 
-async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
+async def _perform_scrape(username: str, use_state: bool, use_cookie_string: bool = False) -> ProfileStats:
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
         
-        context_opts = {}
+        context_opts = {
+            'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         if use_state and os.path.exists(settings.SESSION_FILE):
             context_opts['storage_state'] = settings.SESSION_FILE
             
         context = await browser.new_context(**context_opts)
         
-        # INYECCIÓN FALLBACK: Si no hay state pero hay cookie string en .env
-        if not os.path.exists(settings.SESSION_FILE) and settings.IG_COOKIE_STRING:
+        # INYECCIÓN FALLBACK: Si se indica usar cookie string del .env
+        if use_cookie_string and settings.IG_COOKIE_STRING:
             print("[ScraperService] Inyectando session_id desde IG_COOKIE_STRING...")
             cookies_list = []
             for chunk in settings.IG_COOKIE_STRING.split(";"):
@@ -90,6 +104,7 @@ async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
         
         # Guardamos la imagen clásica que funcionaba antes (no expira rápido)
         classic_img_url = await img_element.get_attribute("content") if img_element else ""
+        description_content = await desc_element.get_attribute("content") if desc_element else ""
         
         api_data = None
         try:
@@ -124,14 +139,18 @@ async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
                 print("[ScraperService] Las cookies ocultaron los posts. Reintentando de forma anónima...")
                 anon_context = await browser.new_context()
                 anon_page = await anon_context.new_page()
+                await Stealth().apply_stealth_async(anon_page)
                 await anon_page.goto(f"https://www.instagram.com/{username}/", wait_until="domcontentloaded")
-                anon_data = await anon_page.evaluate('''async (username) => {
-                    const res = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
-                        headers: { "x-ig-app-id": "936619743392459" }
-                    });
-                    return await res.json();
-                }''', username)
-                edges = anon_data.get("data", {}).get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
+                try:
+                    anon_data = await anon_page.evaluate('''async (username) => {
+                        const res = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
+                            headers: { "x-ig-app-id": "936619743392459" }
+                        });
+                        return await res.json();
+                    }''', username)
+                    edges = anon_data.get("data", {}).get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
+                except Exception as e:
+                    print(f"[ScraperService] Warning: Anon API evaluate failed {e}")
                 await anon_context.close()
                 print(f"[ScraperService] Posts encontrados anónimamente: {len(edges)}")
 
@@ -177,6 +196,7 @@ async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
             
             display_name_fallback = title_content.split("(@")[0].strip() if "(@" in title_content else username
 
+            await browser.close()
             print("[ScraperService] Extracción finalizada con éxito (Vía Fallback Meta)!")
             return ProfileStats(
                 username=username,
@@ -184,7 +204,7 @@ async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
                 followers=followers_str,
                 following=following_str,
                 posts=posts_str,
-                profile_pic_url=img_url,
+                profile_pic_url=classic_img_url,
                 raw_desc=description_content
             )
 
@@ -194,69 +214,127 @@ async def scrape_posts(username: str) -> list[Post]:
     return profile.recent_posts or []
 
 async def scrape_post_comments(post_url: str) -> list[Comment]:
+    """
+    Extrae comentarios de un post usando la API v1 de Instagram.
+    Requiere media_id numérico y preferiblemente sesión autenticada.
+    """
+    import re
+    shortcode_match = re.search(r'/p/([A-Za-z0-9_-]+)', post_url)
+    if not shortcode_match:
+        print(f"[ScraperService] No se pudo extraer shortcode de {post_url}")
+        return []
+    
+    shortcode = shortcode_match.group(1)
+    print(f"[ScraperService] Preparando extracción de comentarios para {shortcode}...")
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
-        context_opts = {}
+        
+        # Configurar contexto con sesión si existe
+        context_opts = {
+            'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         if os.path.exists(settings.SESSION_FILE):
+            print("[ScraperService] Usando sesión guardada para comentarios...")
             context_opts['storage_state'] = settings.SESSION_FILE
             
         context = await browser.new_context(**context_opts)
-        
-        if not os.path.exists(settings.SESSION_FILE) and settings.IG_COOKIE_STRING:
-            cookies_list = []
-            for chunk in settings.IG_COOKIE_STRING.split(";"):
-                if "=" in chunk:
-                    name, value = chunk.split("=", 1)
-                    cookies_list.append({"name": name.strip(), "value": value.strip(), "domain": ".instagram.com", "path": "/"})
-            if cookies_list:
-                await context.add_cookies(cookies_list)
-
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
         
-        print(f"[ScraperService] Buscando comentarios en {post_url}...")
-        await page.goto(post_url, wait_until="domcontentloaded", timeout=25000)
+        # Navegar al post
+        print(f"[ScraperService] Navegando a {post_url}...")
+        await page.goto(post_url, wait_until="domcontentloaded", timeout=30000)
         
-        try:
-            await page.wait_for_selector('ul', timeout=10000)
-            await page.wait_for_timeout(2000)
-        except Exception:
-            print("[ScraperService] No se cargaron los comentarios o timeout.")
-            
-        comments_data = await page.evaluate('''() => {
-            const comments = [];
-            const h3s = document.querySelectorAll('h3, span[dir="auto"]');
-            
-            // Heurística robusta buscando autores
-            const elements = document.querySelectorAll('ul li, article div[role="button"]');
-            
-            for (let el of Array.from(document.querySelectorAll('h3'))) {
-                if (comments.length >= 10) break;
-                const username = el.textContent.trim();
-                if (!username) continue;
-                
-                let parent = el.parentElement;
-                if(parent) parent = parent.parentElement;
-                
-                if (parent) {
-                    const texts = Array.from(parent.querySelectorAll('span[dir="auto"], div[dir="auto"]'))
-                                     .map(e => e.textContent.trim())
-                                     .filter(t => t !== username && t !== 'Verified' && t.length > 0 && t !== 'Reply');
-                    
-                    if(texts.length > 0) {
-                        comments.push({username: username, text: texts[0]});
-                    }
-                }
+        # 1. Obtener el media_id (necesario para la API v1)
+        media_id = await page.evaluate('''() => {
+            const meta = document.querySelector('meta[property="al:ios:url"]');
+            if (meta) {
+                const match = (meta.getAttribute("content") || "").match(/id=(\d+)/);
+                if (match) return match[1];
             }
-            return comments.slice(1, 11); // Omitimos el primer H3 (suele ser el caption del dueño)
+            return null;
         }''')
+        
+        if not media_id:
+            # Fallback buscando en el HTML raw
+            html = await page.content()
+            id_match = re.search(r'"media_id":"(\d+)"', html)
+            if id_match:
+                media_id = id_match.group(1)
+            else:
+                # Segundo fallback: a veces está en el script sharedData
+                id_match = re.search(r'\/p\/[A-Za-z0-9_-]+\/(\d+)\/', html)
+                if id_match: media_id = id_match.group(1)
 
-        comments = []
-        for c in comments_data:
-            comments.append(Comment(username=c['username'], text=c['text']))
-            
+        comments_data = []
+        if media_id:
+            print(f"[ScraperService] media_id encontrado: {media_id}. Invocando API v1...")
+            comments_data = await page.evaluate('''async (mid) => {
+                try {
+                    const res = await fetch(`https://www.instagram.com/api/v1/media/${mid}/comments/?can_support_threading=true&permalink_enabled=false`, {
+                        headers: { "x-ig-app-id": "936619743392459" },
+                        credentials: "include"
+                    });
+                    if (!res.ok) return { error: `HTTP ${res.status}` };
+                    const ct = res.headers.get("content-type") || "";
+                    if (!ct.includes("json")) return { error: "not-json" };
+                    
+                    const data = await res.json();
+                    return (data.comments || []).slice(0, 20).map(c => ({
+                        username: c.user?.username || "unknown",
+                        text: c.text || ""
+                    }));
+                } catch(e) {
+                    return { error: e.toString() };
+                }
+            }''', media_id)
+        
+        # Manejo de error o falta de datos en API
+        if isinstance(comments_data, dict) and "error" in comments_data:
+            print(f"[ScraperService] API v1 falló ({comments_data['error']}). Intentando fallback...")
+            comments_data = []
+
+        # 2. Fallback: DOM scraping si la API falló o no hubo sesión
+        if not comments_data:
+            print("[ScraperService] Usando DOM scraping como fallback...")
+            try:
+                # Esperar a que los comentarios carguen en el DOM
+                await page.wait_for_timeout(3000)
+                comments_data = await page.evaluate('''() => {
+                    const results = [];
+                    // Instagram usa h3 para el nombre de usuario en los comentarios
+                    const userels = Array.from(document.querySelectorAll('h3, span._ap32'));
+                    for (const el of userels) {
+                        if (results.length >= 15) break;
+                        const username = el.textContent.trim();
+                        if (!username || username === 'Verified') continue;
+                        
+                        // Buscar el texto del comentario cerca del usuario
+                        let container = el.closest('div')?.parentElement;
+                        if (container) {
+                            const textEl = container.querySelector('span[dir="auto"]');
+                            if (textEl && textEl.textContent.trim() !== username) {
+                                results.append({ username, text: textEl.textContent.trim() });
+                            }
+                        }
+                    }
+                    return results;
+                }''')
+            except Exception as e:
+                print(f"[ScraperService] Error en DOM fallback: {e}")
+
+        # Convertir a objetos Comment
+        final_comments = []
+        if comments_data:
+            for c in comments_data:
+                if isinstance(c, dict) and c.get('text'):
+                    final_comments.append(Comment(username=c['username'], text=c['text']))
+        
         await browser.close()
-        return comments
+        print(f"[ScraperService] Extracción de comentarios finalizada. Total: {len(final_comments)}")
+        return final_comments
+

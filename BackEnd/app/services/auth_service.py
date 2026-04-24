@@ -17,34 +17,69 @@ async def login_and_save_state(headless: bool = True) -> bool:
                 args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
             )
             context = await browser.new_context(
-                viewport={'width': 1280, 'height': 720}
+                viewport={'width': 1280, 'height': 720},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
             
             # Stealth para login tambien
             await Stealth().apply_stealth_async(page)
             
-            await page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
-            
+            # Usar domcontentloaded y esperar manualmente para ser más resiliente
+            print("[AuthService] Navegando a login page...")
+            await page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded", timeout=40000)
+
+            # Intentar cerrar el banner de cookies si aparece
+            try:
+                # Selectores comunes para botones de cookies en IG
+                cookie_selectors = [
+                    'button:has-text("Allow all cookies")',
+                    'button:has-text("Permitir todas las cookies")',
+                    'button:has-text("Allow essential and optional cookies")',
+                    'button._a9--._a9_0', # Clase común para botones de modal
+                    'div[role="dialog"] button:first-child'
+                ]
+                for selector in cookie_selectors:
+                    if await page.query_selector(selector):
+                        print(f"[AuthService] Detectado banner de cookies ({selector}), haciendo click...")
+                        await page.click(selector)
+                        await asyncio.sleep(1)
+                        break
+            except Exception:
+                pass
+
             print("[AuthService] Esperando inputs de login...")
             try:
-                await page.wait_for_selector('input[name="username"]', timeout=15000)
+                # Aumentar timeout a 45s y usar un selector más genérico si falla
+                await page.wait_for_selector('input[name="username"]', state="visible", timeout=45000)
             except Exception as e:
-                print(f"[AuthService] Timeout en selector de login. Volcando codigo fuente para debuggear...")
-                html_content = await page.content()
-                with open("debug.html", "w", encoding="utf-8") as f:
-                    f.write(html_content)
-                raise e
+                print(f"[AuthService] Timeout en selector de login. Reintentando con selector genérico...")
+                try:
+                    await page.wait_for_selector('input', state="visible", timeout=10000)
+                except:
+                    html_content = await page.content()
+                    with open("debug.html", "w", encoding="utf-8") as f:
+                        f.write(html_content)
+                    raise e
+
             
             print("[AuthService] Ingresando credenciales...")
-            # Escribir lentamente emula a un humano
-            await page.fill('input[name="username"]', settings.IG_USERNAME)
+            # Intentar diferentes nombres de campos (IG a veces usa email/pass en versiones reducidas)
+            user_field = await page.query_selector('input[name="username"]') or await page.query_selector('input[name="email"]')
+            pass_field = await page.query_selector('input[name="password"]') or await page.query_selector('input[name="pass"]')
+
+            if not user_field or not pass_field:
+                print("[AuthService] ERROR: No se encontraron los campos de login.")
+                await browser.close()
+                return False
+
+            await user_field.fill(settings.IG_USERNAME)
             await asyncio.sleep(0.5)
-            await page.fill('input[name="password"]', settings.IG_PASSWORD)
-            
+            await pass_field.fill(settings.IG_PASSWORD)
             await asyncio.sleep(1)
-            await page.click('button[type="submit"]')
             
+            print("[AuthService] Enviando formulario (Enter)...")
+            await page.keyboard.press("Enter")
             print("[AuthService] Validando respuesta de Instagram...")
             # Esperamos 6 segundos fijos en vez de vigilar la URL exacta ya que IG redirecciona a paginas de onboarding como "Guardar info"
             await asyncio.sleep(6)
