@@ -52,7 +52,9 @@ jobs:
             export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
             
             # Descargar la última versión de las imágenes
-            docker-compose pull
+            docker compose pull
             
             # Reiniciar los contenedores
-            docker-compose up -d --remove-orphans
+            docker compose pull
+            docker compose down
+            docker compose up -d --remove-orphans
