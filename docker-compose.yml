@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  backend:
+    image: ${DOCKER_USERNAME}/ig-scraper-backend:latest
+    build:
+      context: ./BackEnd
+    ports:
+      - "8000:8000"
+    environment:
+      - PROJECT_NAME=IG Modular Monolith Scraper
+      - IG_USERNAME=${IG_USERNAME}
+      - IG_PASSWORD=${IG_PASSWORD}
+      - IG_COOKIE_STRING=${IG_COOKIE_STRING}
+      - MONGODB_URI=${MONGODB_URI}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    volumes:
+      # Keep the session file persistent across restarts
+      - backend_data:/app/BackEnd
+    restart: unless-stopped
+
+  frontend:
+    image: ${DOCKER_USERNAME}/ig-scraper-frontend:latest
+    build:
+      context: ./FrontEnd
+      args:
+        # In a real deployment, replace localhost with the backend domain/IP
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend_data:
