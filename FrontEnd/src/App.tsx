@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Loader2, AlertCircle, Sparkles, History, Clock, Image as ImageIcon, MessageSquare } from 'lucide-react';
+import { Search, Loader2, AlertCircle, Sparkles, History, Clock, Image as ImageIcon, MessageSquare, TrendingUp, ThumbsUp, ThumbsDown, Minus, BarChart3, X } from 'lucide-react';
 import axios from 'axios';
 import './App.css';
 
@@ -17,6 +17,7 @@ function App() {
   const [selectedPost, setSelectedPost] = useState<any>(null);
   const [loadingComments, setLoadingComments] = useState(false);
   const [comments, setComments] = useState<any[]>([]);
+  const [sentimentAnalysis, setSentimentAnalysis] = useState<any>(null);
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -41,6 +42,7 @@ function App() {
     setPosts([]);
     setSelectedPost(null);
     setComments([]);
+    setSentimentAnalysis(null);
 
     try {
       const response = await axios.get(`${API_URL}/api/profile/${username.trim()}`);
@@ -85,6 +87,7 @@ function App() {
     setPosts(profileData.recent_posts || []);
     setSelectedPost(null);
     setComments([]);
+    setSentimentAnalysis(null);
   };
 
   const loadPosts = async () => {
@@ -105,16 +108,44 @@ function App() {
   const loadComments = async (post: any) => {
     setSelectedPost(post);
     setLoadingComments(true);
+    setComments([]);
+    setSentimentAnalysis(null);
     try {
-      const res = await axios.get(`${API_URL}/api/post/comments?url=${encodeURIComponent(post.url)}&username=${data.username}`);
+      const res = await axios.get(
+        `${API_URL}/api/post/comments?url=${encodeURIComponent(post.url)}&username=${data.username}&caption=${encodeURIComponent(post.caption || '')}`
+      );
       if (res.data.status === "success") {
-        setComments(res.data.data);
+        setComments(res.data.data.comments || []);
+        setSentimentAnalysis(res.data.data.sentiment_analysis || null);
       }
     } catch (err: any) {
       setError(err.message || 'Error al cargar comentarios');
     } finally {
       setLoadingComments(false);
     }
+  };
+
+  const getSentimentIcon = (sentiment: string) => {
+    switch (sentiment) {
+      case 'positive': return <ThumbsUp size={14} />;
+      case 'negative': return <ThumbsDown size={14} />;
+      default: return <Minus size={14} />;
+    }
+  };
+
+  const getAcceptanceColor = (score: number) => {
+    if (score >= 75) return '#22c55e';
+    if (score >= 50) return '#eab308';
+    if (score >= 25) return '#f97316';
+    return '#ef4444';
+  };
+
+  const getAcceptanceLabel = (score: number) => {
+    if (score >= 80) return 'Excelente';
+    if (score >= 60) return 'Buena';
+    if (score >= 40) return 'Moderada';
+    if (score >= 20) return 'Baja';
+    return 'Muy Baja';
   };
 
   return (
@@ -206,7 +237,7 @@ function App() {
               </div>
             </div>
 
-            {/* Nueva sección de Posts */}
+            {/* Sección de Posts */}
             <div className="posts-section">
               <div className="posts-header">
                 <h3>Últimos Posts</h3>
@@ -234,8 +265,8 @@ function App() {
                          <div className="post-thumbnail-fallback"><ImageIcon size={32} /></div>
                       )}
                       <div className="post-overlay">
-                         <MessageSquare size={24} />
-                         <span>Ver Comentarios</span>
+                         <BarChart3 size={24} />
+                         <span>Analizar Post</span>
                       </div>
                     </div>
                   ))}
@@ -246,31 +277,113 @@ function App() {
         </div>
       )}
 
+      {/* Modal de Análisis de Post */}
       {selectedPost && (
-        <div className="modal-overlay" onClick={() => setSelectedPost(null)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <button className="close-modal" onClick={() => setSelectedPost(null)}>×</button>
-            <div className="modal-header">
-              <h3>Comentarios del Post</h3>
-              <a href={selectedPost.url} target="_blank" rel="noreferrer" className="view-post-link">Ver en Instagram</a>
+        <div className="modal-overlay" onClick={() => { setSelectedPost(null); setSentimentAnalysis(null); }}>
+          <div className="modal-content analysis-modal" onClick={e => e.stopPropagation()}>
+            <button className="close-modal" onClick={() => { setSelectedPost(null); setSentimentAnalysis(null); }}>
+              <X size={20} />
+            </button>
+            
+            {/* Header del modal con imagen y caption */}
+            <div className="modal-post-header">
+              <div className="modal-post-image">
+                {selectedPost.image_url ? (
+                  <img src={proxyImg(selectedPost.image_url)} alt="Post" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="modal-post-image-fallback"><ImageIcon size={40} /></div>
+                )}
+              </div>
+              <div className="modal-post-info">
+                <h3>Análisis de Aceptación</h3>
+                {selectedPost.caption && (
+                  <p className="modal-caption">{selectedPost.caption.substring(0, 150)}{selectedPost.caption.length > 150 ? '...' : ''}</p>
+                )}
+                <a href={selectedPost.url} target="_blank" rel="noreferrer" className="view-post-link">
+                  Ver en Instagram ↗
+                </a>
+              </div>
             </div>
             
             {loadingComments ? (
-              <div className="loading-spinner-container">
-                <Loader2 className="spin-icon" size={32} />
-                <p>Extrayendo comentarios...</p>
-              </div>
-            ) : comments.length > 0 ? (
-              <div className="comments-list">
-                {comments.map((c, i) => (
-                  <div key={i} className="comment-item">
-                    <strong>{c.username}</strong>
-                    <p>{c.text}</p>
-                  </div>
-                ))}
+              <div className="loading-spinner-container analysis-loading">
+                <Loader2 className="spin-icon" size={36} />
+                <p>Extrayendo comentarios y analizando sentimiento...</p>
+                <span className="loading-subtext">Esto puede tomar unos segundos</span>
               </div>
             ) : (
-              <p className="no-comments">No se encontraron comentarios.</p>
+              <>
+                {/* Barra de Aceptación */}
+                {sentimentAnalysis && (
+                  <div className="sentiment-section">
+                    <div className="acceptance-header">
+                      <div className="acceptance-score-display">
+                        <TrendingUp size={20} color={getAcceptanceColor(sentimentAnalysis.acceptance_score)} />
+                        <span className="acceptance-score" style={{ color: getAcceptanceColor(sentimentAnalysis.acceptance_score) }}>
+                          {sentimentAnalysis.acceptance_score}%
+                        </span>
+                        <span className="acceptance-label" style={{ color: getAcceptanceColor(sentimentAnalysis.acceptance_score) }}>
+                          {getAcceptanceLabel(sentimentAnalysis.acceptance_score)}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div className="acceptance-bar-container">
+                      <div 
+                        className="acceptance-bar-fill"
+                        style={{ 
+                          width: `${sentimentAnalysis.acceptance_score}%`,
+                          background: `linear-gradient(90deg, ${getAcceptanceColor(sentimentAnalysis.acceptance_score)}88, ${getAcceptanceColor(sentimentAnalysis.acceptance_score)})`
+                        }}
+                      />
+                    </div>
+                    
+                    <div className="sentiment-counters">
+                      <div className="counter positive">
+                        <ThumbsUp size={14} />
+                        <span>{sentimentAnalysis.positive_count} Positivos</span>
+                      </div>
+                      <div className="counter neutral">
+                        <Minus size={14} />
+                        <span>{sentimentAnalysis.neutral_count} Neutros</span>
+                      </div>
+                      <div className="counter negative">
+                        <ThumbsDown size={14} />
+                        <span>{sentimentAnalysis.negative_count} Negativos</span>
+                      </div>
+                    </div>
+                    
+                    {sentimentAnalysis.summary && (
+                      <div className="sentiment-summary">
+                        <p>{sentimentAnalysis.summary}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Lista de Comentarios */}
+                {comments.length > 0 ? (
+                  <div className="comments-list">
+                    <h4 className="comments-title">
+                      <MessageSquare size={16} /> Comentarios ({comments.length})
+                    </h4>
+                    {comments.map((c, i) => (
+                      <div key={i} className={`comment-item comment-${c.sentiment || 'neutral'}`}>
+                        <div className="comment-header">
+                          <strong>@{c.username}</strong>
+                          <span className={`sentiment-badge badge-${c.sentiment || 'neutral'}`}>
+                            {getSentimentIcon(c.sentiment || 'neutral')}
+                            {c.sentiment === 'positive' ? 'Positivo' : c.sentiment === 'negative' ? 'Negativo' : 'Neutro'}
+                          </span>
+                        </div>
+                        <p>{c.text}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="no-comments">No se encontraron comentarios para este post.</p>
+                )}
+              </>
             )}
           </div>
         </div>

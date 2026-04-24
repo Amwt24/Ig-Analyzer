@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from app.services.scraper_service import scrape_profile, scrape_posts, scrape_post_comments
+from app.services.sentiment_service import analyze_post_acceptance
 from app.core.config import settings
 from app.core.database import sync_collection, async_collection
 from datetime import datetime
@@ -78,21 +79,37 @@ def get_user_posts(username: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/post/comments")
-def get_post_comments(url: str = Query(...), username: str = Query(None)):
+def get_post_comments(url: str = Query(...), username: str = Query(None), caption: str = Query("")):
     print(f"\n[API] Solicitud para extraer comentarios del post: {url}")
     try:
         comments = asyncio.run(scrape_post_comments(url))
-        comments_dict = [c.model_dump() for c in comments]
+        
+        # Analizar sentimiento con Groq LLM
+        print(f"[API] Analizando sentimiento de {len(comments)} comentarios con Groq...")
+        enriched_comments, sentiment_analysis = analyze_post_acceptance(caption, comments)
+        
+        comments_dict = [c.model_dump() for c in enriched_comments]
+        analysis_dict = sentiment_analysis.model_dump()
         
         # Si pasamos el username, podemos vincular el comentario en la DB
         if sync_collection is not None and username:
             sync_collection.update_one(
                 {"username": username, "recent_posts.url": url},
-                {"$set": {"recent_posts.$.comments": comments_dict}}
+                {"$set": {
+                    "recent_posts.$.comments": comments_dict,
+                    "recent_posts.$.sentiment_analysis": analysis_dict
+                }}
             )
-            print(f"[MongoDB] Comentarios añadidos al post {url} de {username}.")
+            print(f"[MongoDB] Comentarios y análisis añadidos al post {url} de {username}.")
             
-        return {"status": "success", "data": comments_dict}
+        return {
+            "status": "success", 
+            "data": {
+                "comments": comments_dict,
+                "sentiment_analysis": analysis_dict,
+                "caption": caption
+            }
+        }
     except Exception as e:
         print("[API Error] Falló la extracción de comentarios:")
         import traceback
