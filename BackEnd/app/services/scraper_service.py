@@ -7,52 +7,66 @@ from app.models.profile import ProfileStats, Post, Comment
 from app.services.auth_service import login_and_save_state
 
 async def scrape_profile(username: str) -> ProfileStats:
-    # Asegurar que exista state o fallbacks
-    if not os.path.exists(settings.SESSION_FILE):
-        if settings.IG_COOKIE_STRING:
-            print("[ScraperService] No se encontró session_state.json. Se utilizarán cookies del .env como fallback.")
-        else:
-            print("[ScraperService] No se encontró session_state.json ni cookies. Delegando a AuthService...")
-            success = await login_and_save_state(headless=True)
-            if not success:
-                raise Exception("No se pudo regenerar la sesión automáticamente ni hay cookies de fallback.")
-                
-    # Intento de scrape
+    # ESTRATEGIA: Primero intentar scraping anónimo (funciona para perfiles públicos).
+    # Solo recurrir a sesión autenticada si el perfil es privado o IG bloquea.
+    
     try:
-        data = await _perform_scrape(username, use_state=True)
+        print(f"[ScraperService] Intentando scraping anónimo para {username}...")
+        data = await _perform_scrape(username, use_state=False)
         return data
-    except Exception as e:
-        # Si hubo un problema de redirección (cookie caducada o baneada)
-        if "redireccionó a Login" in str(e):
-            print("[ScraperService] La sesión guardada expiró de repente. Regenerando desde 0...")
-            if os.path.exists(settings.SESSION_FILE):
-                os.remove(settings.SESSION_FILE)
-                
+    except Exception as anon_error:
+        print(f"[ScraperService] Scraping anónimo falló: {anon_error}")
+        
+        # Si el anónimo falla, intentar con sesión autenticada
+        if os.path.exists(settings.SESSION_FILE):
+            print("[ScraperService] Reintentando con session_state.json...")
+            try:
+                data = await _perform_scrape(username, use_state=True)
+                return data
+            except Exception as auth_error:
+                if "redireccionó a Login" in str(auth_error):
+                    print("[ScraperService] Sesión expirada. Eliminando session_state.json...")
+                    os.remove(settings.SESSION_FILE)
+                else:
+                    raise auth_error
+        
+        # Si hay cookie string en .env, intentar con eso
+        if settings.IG_COOKIE_STRING:
+            print("[ScraperService] Reintentando con IG_COOKIE_STRING del .env...")
+            try:
+                data = await _perform_scrape(username, use_state=False, use_cookie_string=True)
+                return data
+            except Exception as cookie_error:
+                print(f"[ScraperService] Cookie string también falló: {cookie_error}")
+        
+        # Último recurso: intentar auto-login
+        if settings.IG_USERNAME and settings.IG_PASSWORD:
+            print("[ScraperService] Intentando login autónomo como último recurso...")
             success = await login_and_save_state(headless=True)
-            if not success:
-                raise Exception("No se pudo iniciar sesión para refrescar la cookie vencida.")
-            
-            # Reintentamos UNA sola vez la extracción
-            data = await _perform_scrape(username, use_state=True)
-            return data
-        else:
-            raise e
+            if success:
+                data = await _perform_scrape(username, use_state=True)
+                return data
+        
+        # Si todo falla, re-lanzar el error original con más contexto
+        raise Exception(f"No se pudo extraer el perfil de '{username}'. Error anónimo: {anon_error}")
 
-async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
+async def _perform_scrape(username: str, use_state: bool, use_cookie_string: bool = False) -> ProfileStats:
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
         
-        context_opts = {}
+        context_opts = {
+            'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         if use_state and os.path.exists(settings.SESSION_FILE):
             context_opts['storage_state'] = settings.SESSION_FILE
             
         context = await browser.new_context(**context_opts)
         
-        # INYECCIÓN FALLBACK: Si no hay state pero hay cookie string en .env
-        if not os.path.exists(settings.SESSION_FILE) and settings.IG_COOKIE_STRING:
+        # INYECCIÓN FALLBACK: Si se indica usar cookie string del .env
+        if use_cookie_string and settings.IG_COOKIE_STRING:
             print("[ScraperService] Inyectando session_id desde IG_COOKIE_STRING...")
             cookies_list = []
             for chunk in settings.IG_COOKIE_STRING.split(";"):
@@ -90,6 +104,7 @@ async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
         
         # Guardamos la imagen clásica que funcionaba antes (no expira rápido)
         classic_img_url = await img_element.get_attribute("content") if img_element else ""
+        description_content = await desc_element.get_attribute("content") if desc_element else ""
         
         api_data = None
         try:
@@ -124,14 +139,18 @@ async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
                 print("[ScraperService] Las cookies ocultaron los posts. Reintentando de forma anónima...")
                 anon_context = await browser.new_context()
                 anon_page = await anon_context.new_page()
+                await Stealth().apply_stealth_async(anon_page)
                 await anon_page.goto(f"https://www.instagram.com/{username}/", wait_until="domcontentloaded")
-                anon_data = await anon_page.evaluate('''async (username) => {
-                    const res = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
-                        headers: { "x-ig-app-id": "936619743392459" }
-                    });
-                    return await res.json();
-                }''', username)
-                edges = anon_data.get("data", {}).get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
+                try:
+                    anon_data = await anon_page.evaluate('''async (username) => {
+                        const res = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
+                            headers: { "x-ig-app-id": "936619743392459" }
+                        });
+                        return await res.json();
+                    }''', username)
+                    edges = anon_data.get("data", {}).get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
+                except Exception as e:
+                    print(f"[ScraperService] Warning: Anon API evaluate failed {e}")
                 await anon_context.close()
                 print(f"[ScraperService] Posts encontrados anónimamente: {len(edges)}")
 
@@ -177,6 +196,7 @@ async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
             
             display_name_fallback = title_content.split("(@")[0].strip() if "(@" in title_content else username
 
+            await browser.close()
             print("[ScraperService] Extracción finalizada con éxito (Vía Fallback Meta)!")
             return ProfileStats(
                 username=username,
@@ -184,7 +204,7 @@ async def _perform_scrape(username: str, use_state: bool) -> ProfileStats:
                 followers=followers_str,
                 following=following_str,
                 posts=posts_str,
-                profile_pic_url=img_url,
+                profile_pic_url=classic_img_url,
                 raw_desc=description_content
             )
 
@@ -199,7 +219,9 @@ async def scrape_post_comments(post_url: str) -> list[Comment]:
             headless=True,
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
-        context_opts = {}
+        context_opts = {
+            'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         if os.path.exists(settings.SESSION_FILE):
             context_opts['storage_state'] = settings.SESSION_FILE
             

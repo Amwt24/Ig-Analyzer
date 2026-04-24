@@ -5,7 +5,7 @@ from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join("..", "ScraperIG", ".env"))
+load_dotenv()
 
 def build_playwright_cookies(cookie_string: str):
     cookies = []

@@ -17,18 +17,22 @@ async def login_and_save_state(headless: bool = True) -> bool:
                 args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
             )
             context = await browser.new_context(
-                viewport={'width': 1280, 'height': 720}
+                viewport={'width': 1280, 'height': 720},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
             
             # Stealth para login tambien
             await Stealth().apply_stealth_async(page)
             
-            await page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
+            # Usar networkidle para esperar a que el JS de React hidrate la página
+            print("[AuthService] Navegando a login page (esperando networkidle)...")
+            await page.goto("https://www.instagram.com/accounts/login/", wait_until="networkidle", timeout=30000)
             
             print("[AuthService] Esperando inputs de login...")
             try:
-                await page.wait_for_selector('input[name="username"]', timeout=15000)
+                # Aumentar timeout a 30s - Instagram tarda en hidratar el formulario
+                await page.wait_for_selector('input[name="username"]', state="visible", timeout=30000)
             except Exception as e:
                 print(f"[AuthService] Timeout en selector de login. Volcando codigo fuente para debuggear...")
                 html_content = await page.content()
