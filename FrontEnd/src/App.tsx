@@ -282,15 +282,37 @@ function App() {
                 {loadingPersonality ? (
                   <div className="personality-loading">
                     <Loader2 className="spin-icon" size={32} />
-                    <p>Procesando información del perfil, posts y comentarios...</p>
+                    <p>Procesando biografía, posts y sentimientos de la audiencia...</p>
                   </div>
                 ) : (
-                  <div className="personality-content">
-                    <p>{personalityResult}</p>
-                    <div className="personality-disclaimer">
-                      * Este análisis es generado por IA basado únicamente en la actividad pública reciente.
+                  <>
+                    <div className="personality-content">
+                      <p>{personalityResult}</p>
                     </div>
-                  </div>
+
+                    {/* Nueva sección de Fuentes */}
+                    <div className="personality-sources">
+                      <h4>Fuentes analizadas:</h4>
+                      <div className="sources-list">
+                        {posts.filter(p => p.sentiment_analysis).slice(0, 5).map((post, idx) => (
+                          <div key={idx} className="source-item" title={post.caption}>
+                            <img src={proxyImg(post.image_url)} alt="Source" />
+                            <div className="source-dot" title="Análisis de comentarios incluido" />
+                          </div>
+                        ))}
+                        <div className="source-info-item">
+                          <span className="source-label">Bio & Stats</span>
+                        </div>
+                      </div>
+                      <p className="sources-help">
+                        La IA ha procesado estas {posts.filter(p => p.sentiment_analysis).slice(0, 5).length} publicaciones porque ya tenían el análisis de comentarios completado.
+                      </p>
+                    </div>
+
+                    <div className="personality-disclaimer">
+                      * Este análisis es una interpretación estadística y lingüística de la actividad pública.
+                    </div>
+                  </>
                 )}
               </div>
             )}

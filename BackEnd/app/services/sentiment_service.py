@@ -183,7 +183,8 @@ Por favor, proporciona un análisis estructurado en español (aprox. 150-200 pal
 3. Estilo de comunicación y cómo es percibido por su comunidad.
 4. Conclusión sobre su marca personal.
 
-Responde con el texto del análisis directamente, sin preámbulos."""
+Responde con el texto del análisis directamente, sin preámbulos.
+IMPORTANTE: Al final del análisis, añade una línea que diga: "Análisis basado en [X] publicaciones recientes con sus respectivos comentarios." (reemplaza [X] por el número de posts analizados)."""
 
     try:
         client = Groq(api_key=settings.GROQ_API_KEY)
