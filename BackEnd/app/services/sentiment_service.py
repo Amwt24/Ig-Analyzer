@@ -143,3 +143,71 @@ Reglas:
             total_comments=len(comments),
             summary=f"Error en el análisis de sentimiento: {str(e)}"
         )
+
+def analyze_personality(profile_data: dict) -> str:
+    """
+    Usa toda la información disponible del perfil (bio, posts, conclusiones de comentarios)
+    para generar un análisis psicológico/de personalidad de la persona.
+    """
+    username = profile_data.get("username", "desconocido")
+    display_name = profile_data.get("display_name", "")
+    bio = profile_data.get("biography", "")
+    category = profile_data.get("category", "")
+    
+    # Recopilar información de posts y sus análisis de sentimiento
+    posts_summary = []
+    for i, post in enumerate(profile_data.get("recent_posts", [])[:5]):
+        caption = post.get("caption", "Sin texto")
+        sentiment_summary = post.get("sentiment_analysis", {}).get("summary", "")
+        acceptance = post.get("sentiment_analysis", {}).get("acceptance_score", "N/A")
+        
+        post_info = f"Post {i+1}: '{caption}'"
+        if sentiment_summary:
+            post_info += f" | Reacción del público: {sentiment_summary} (Aceptación: {acceptance}%)"
+        posts_summary.append(post_info)
+    
+    all_posts_text = "\n".join(posts_summary)
+    
+    prompt = f"""Basado en la siguiente información de un perfil de Instagram, realiza un análisis de personalidad y características de la persona detrás de la cuenta.
+
+PERFIL: @{username} ({display_name})
+BIOGRAFÍA: "{bio}"
+CATEGORÍA: {category}
+
+DATOS RECIENTES DE SUS PUBLICACIONES Y CÓMO REACCIONA SU AUDIENCIA:
+{all_posts_text}
+
+Por favor, proporciona un análisis estructurado en español (aprox. 150-200 palabras) que incluya:
+1. Arquetipo o perfil general.
+2. Intereses principales y valores que proyecta.
+3. Estilo de comunicación y cómo es percibido por su comunidad.
+4. Conclusión sobre su marca personal.
+
+Responde con el texto del análisis directamente, sin preámbulos.
+IMPORTANTE: Al final del análisis, añade una línea que diga: "Análisis basado en [X] publicaciones recientes con sus respectivos comentarios." (reemplaza [X] por el número de posts analizados)."""
+
+    try:
+        client = Groq(api_key=settings.GROQ_API_KEY)
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Eres un experto psicólogo y analista de marketing digital especializado en marca personal y comportamiento en redes sociales."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.5,
+            max_completion_tokens=2048,
+        )
+        
+        analysis = completion.choices[0].message.content.strip()
+        print(f"[SentimentService] Análisis de personalidad generado para @{username}")
+        return analysis
+        
+    except Exception as e:
+        print(f"[SentimentService] Error generando análisis de personalidad: {e}")
+        return f"No se pudo generar el análisis de personalidad en este momento: {str(e)}"
